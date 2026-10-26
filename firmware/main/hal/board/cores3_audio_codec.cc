@@ -1,10 +1,34 @@
 #include "cores3_audio_codec.h"
 
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <driver/i2c_master.h>
 #include <driver/i2s_tdm.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+
 #define TAG "CoreS3AudioCodec"
+
+// Where the echo reference comes from (Kconfig: "StackChan full duplex").
+// The ES7210 has MIC1..MIC3 selected and runs in TDM mode. The shipped layout reads
+// a 2-slot frame: slot 0 is MIC1, slot 1 the next TDM channel, which is most likely
+// MIC3, the speaker loop (Espressif reads its own ES7210 boards in the order MIC1,
+// MIC3, MIC2, MIC4). The 4-slot fallback reads all four slots and keeps 0 and a
+// chosen one; both I2S directions share BCLK/WS, so the speaker then runs 32-bit
+// slots (64 bits per frame, like the microphone) and the AW88298 is set to 32 bit.
+#if CONFIG_STACKCHAN_AEC_REF_4SLOT
+#define CORES3_IN_CHANNELS 4
+#define CORES3_REF_SLOT CONFIG_STACKCHAN_AEC_REF_TDM_SLOT
+#define CORES3_OUT_BITS 32
+#else
+#define CORES3_IN_CHANNELS 2
+#define CORES3_REF_SLOT 1
+#define CORES3_OUT_BITS 16
+#endif
+// ES7210 input that carries the speaker loop (gain masks are by mic, not by slot).
+#define CORES3_REF_MIC 2
 
 CoreS3AudioCodec::CoreS3AudioCodec(void* i2c_master_handle, int input_sample_rate, int output_sample_rate,
     gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din,
@@ -182,7 +206,16 @@ void CoreS3AudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gp
     ESP_LOGI(TAG, "Duplex channels created");
 }
 
+int CoreS3AudioCodec::CapVolume(int volume) {
+#if defined(CONFIG_STACKCHAN_AEC_MAX_VOLUME)
+    return std::min(volume, CONFIG_STACKCHAN_AEC_MAX_VOLUME);
+#else
+    return volume;
+#endif
+}
+
 void CoreS3AudioCodec::SetOutputVolume(int volume) {
+    volume = CapVolume(volume);
     ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, volume));
     AudioCodec::SetOutputVolume(volume);
 }
@@ -194,16 +227,24 @@ void CoreS3AudioCodec::EnableInput(bool enable) {
     if (enable) {
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
-            .channel = 2,
+            .channel = CORES3_IN_CHANNELS,
             .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0),
             .sample_rate = (uint32_t)output_sample_rate_,
             .mclk_multiple = 0,
         };
         if (input_reference_) {
-            fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
+            fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(CORES3_REF_SLOT);
         }
         ESP_ERROR_CHECK(esp_codec_dev_open(input_dev_, &fs));
         ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0), input_gain_));
+#if defined(CONFIG_STACKCHAN_AEC_REF_GAIN_DB)
+        if (input_reference_) {
+            ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(
+                input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(CORES3_REF_MIC), CONFIG_STACKCHAN_AEC_REF_GAIN_DB));
+        }
+        ESP_LOGI(TAG, "Echo reference: %d-slot frame, slot %d, MIC3 gain %d dB, volume cap %d%%",
+            CORES3_IN_CHANNELS, CORES3_REF_SLOT, CONFIG_STACKCHAN_AEC_REF_GAIN_DB, CapVolume(100));
+#endif
     } else {
         ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
     }
@@ -215,16 +256,16 @@ void CoreS3AudioCodec::EnableOutput(bool enable) {
         return;
     }
     if (enable) {
-        // Play 16bit 1 channel
+        // Play 1 channel: 16 bit, or 32-bit slots in the 4-slot reference layout
         esp_codec_dev_sample_info_t fs = {
-            .bits_per_sample = 16,
+            .bits_per_sample = CORES3_OUT_BITS,
             .channel = 1,
             .channel_mask = 0,
             .sample_rate = (uint32_t)output_sample_rate_,
             .mclk_multiple = 0,
         };
         ESP_ERROR_CHECK(esp_codec_dev_open(output_dev_, &fs));
-        ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, output_volume_));
+        ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, CapVolume(output_volume_)));
     } else {
         ESP_ERROR_CHECK(esp_codec_dev_close(output_dev_));
     }
@@ -234,13 +275,57 @@ void CoreS3AudioCodec::EnableOutput(bool enable) {
 int CoreS3AudioCodec::Read(int16_t* dest, int samples) {
     if (input_enabled_) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t)));
+#if CONFIG_STACKCHAN_AEC_LEVEL_LOG
+        LogLevels(dest, samples);
+#endif
     }
     return samples;
 }
 
 int CoreS3AudioCodec::Write(const int16_t* data, int samples) {
     if (output_enabled_) {
+#if CONFIG_STACKCHAN_AEC_REF_4SLOT
+        out32_.resize(samples);
+        for (int i = 0; i < samples; ++i) {
+            out32_[i] = static_cast<int32_t>(data[i]) * 65536;  // MSB-aligned in the 32-bit slot
+        }
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, out32_.data(), samples * sizeof(int32_t)));
+#else
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
+#endif
+#if CONFIG_STACKCHAN_AEC_LEVEL_LOG
+        level_played_ += samples;
+#endif
     }
     return samples;
 }
+
+#if CONFIG_STACKCHAN_AEC_LEVEL_LOG
+void CoreS3AudioCodec::LogLevels(const int16_t* data, int samples) {
+    if (input_channels_ < 2) {
+        return;
+    }
+    // Interleaved: [mic, reference] per frame.
+    for (int i = 0; i + 1 < samples; i += 2) {
+        for (int ch = 0; ch < 2; ++ch) {
+            const int v = data[i + ch];
+            level_sum_[ch] += static_cast<int64_t>(v) * v;
+            level_peak_[ch] = std::max(level_peak_[ch], std::abs(v));
+        }
+        level_frames_++;
+    }
+    const int64_t now = esp_timer_get_time();
+    if (level_frames_ == 0 || now - level_last_us_ < 1000000) {
+        return;
+    }
+    const int played_ms = level_played_.exchange(0) * 1000 / output_sample_rate_;
+    ESP_LOGI(TAG, "AEC levels: mic rms %d peak %d | ref rms %d peak %d | speaker played %d ms",
+        static_cast<int>(std::sqrt(static_cast<double>(level_sum_[0]) / level_frames_)), level_peak_[0],
+        static_cast<int>(std::sqrt(static_cast<double>(level_sum_[1]) / level_frames_)), level_peak_[1],
+        played_ms);
+    level_sum_[0] = level_sum_[1] = 0;
+    level_peak_[0] = level_peak_[1] = 0;
+    level_frames_ = 0;
+    level_last_us_ = now;
+}
+#endif

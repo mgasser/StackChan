@@ -32,3 +32,8 @@ ctest --test-dir build-host-tests --output-on-failure
 ```bash
 idf.py flash
 ```
+
+### Full-duplex test build
+
+One robot can run a variant that cancels the speaker's echo on the robot and keeps listening
+while it speaks (Playkind gateway, GPT-Live): `./build_duplex.sh`. See [DUPLEX.md](./DUPLEX.md).

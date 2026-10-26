@@ -1,0 +1,65 @@
+# Builds the StackChan firmware with ESP-IDF v5.5.4: the stock build (idf.py build)
+# and the full-duplex test build (firmware/build_duplex.sh, see firmware/DUPLEX.md).
+# The duplex image is kept as an artifact: flash it over USB, or upload
+# stack-chan.bin to the Playkind gateway for one robot.
+name: StackChan firmware
+
+on:
+  push:
+    paths:
+      - "firmware/**"
+      - ".github/workflows/firmware.yml"
+  pull_request:
+    paths:
+      - "firmware/**"
+      - ".github/workflows/firmware.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.4
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [stock, duplex]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch xiaozhi-esp32 (with the patch) and the components
+        working-directory: firmware
+        shell: bash
+        run: |
+          git config --global --add safe.directory '*'
+          python3 fetch_repos.py
+          # fetch_repos.py skips a patch that does not apply: fail here instead.
+          grep -q '"device_aec"' xiaozhi-esp32/main/protocols/websocket_protocol.cc
+
+      - name: Build (stock)
+        if: matrix.variant == 'stock'
+        working-directory: firmware
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py build
+          # The stock build stays half duplex.
+          ! grep -q '^CONFIG_USE_DEVICE_AEC=y' sdkconfig
+
+      - name: Build (full duplex)
+        if: matrix.variant == 'duplex'
+        working-directory: firmware
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          ./build_duplex.sh
+
+      - name: Keep the full-duplex image
+        if: matrix.variant == 'duplex'
+        uses: actions/upload-artifact@v4
+        with:
+          name: stackchan-duplex-firmware
+          path: firmware/dist/
+          if-no-files-found: error
+          retention-days: 30

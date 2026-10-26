@@ -1,5 +1,5 @@
 diff --git a/main/application.cc b/main/application.cc
-index d69d43d..e67514b 100644
+index d69d43d..08eded7 100644
 --- a/main/application.cc
 +++ b/main/application.cc
 @@ -1,14 +1,15 @@
@@ -55,7 +55,23 @@ index d69d43d..e67514b 100644
          }
  
          // This will block the loop until the activation is done or timeout
-@@ -609,36 +614,6 @@ void Application::InitializeProtocol() {
+@@ -529,7 +534,14 @@ void Application::InitializeProtocol() {
+                     SetDeviceState(kDeviceStateSpeaking);
+                 });
+             } else if (strcmp(state->valuestring, "stop") == 0) {
+-                Schedule([this]() {
++                // Playkind gateway: "flush" marks a cut (barge-in, stop), not the end of an
++                // answer. Drop the audio still queued, so Robo stops at once; in realtime
++                // mode nothing else would clear it.
++                bool flush = cJSON_IsTrue(cJSON_GetObjectItem(root, "flush"));
++                Schedule([this, flush]() {
++                    if (flush) {
++                        audio_service_.ResetDecoder();
++                    }
+                     if (GetDeviceState() == kDeviceStateSpeaking) {
+                         if (listening_mode_ == kListeningModeManualStop) {
+                             SetDeviceState(kDeviceStateIdle);
+@@ -609,36 +621,6 @@ void Application::InitializeProtocol() {
      protocol_->Start();
  }
  
@@ -92,7 +108,7 @@ index d69d43d..e67514b 100644
  void Application::Alert(const char* status, const char* message, const char* emotion, const std::string_view& sound) {
      ESP_LOGW(TAG, "Alert [%s] %s: %s", emotion, status, message);
      auto display = Board::GetInstance().GetDisplay();
-@@ -716,8 +691,13 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
+@@ -716,8 +698,13 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
          return;
      }
  
@@ -106,7 +122,7 @@ index d69d43d..e67514b 100644
              return;
          }
      }
-@@ -825,8 +805,13 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
+@@ -825,8 +812,13 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
          return;
      }
  
@@ -120,7 +136,7 @@ index d69d43d..e67514b 100644
              audio_service_.EnableWakeWordDetection(true);
              return;
          }
-@@ -1116,4 +1101,3 @@ void Application::ResetProtocol() {
+@@ -1116,4 +1108,3 @@ void Application::ResetProtocol() {
          protocol_.reset();
      });
  }
@@ -316,6 +332,49 @@ index 3692e0c..7bfbc5c 100644
      
      // Strategy instance
      std::unique_ptr<AssetStrategy> strategy_;
+diff --git a/main/audio/processors/afe_audio_processor.cc b/main/audio/processors/afe_audio_processor.cc
+index 15e9cc5..635d4bb 100644
+--- a/main/audio/processors/afe_audio_processor.cc
++++ b/main/audio/processors/afe_audio_processor.cc
+@@ -38,7 +38,13 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
+     char* vad_model_name = esp_srmodel_filter(models, ESP_VADN_PREFIX, NULL);
+     
+     afe_config_t* afe_config = afe_config_init(input_format.c_str(), NULL, AFE_TYPE_VC, AFE_MODE_HIGH_PERF);
++#if CONFIG_STACKCHAN_AEC_MODE_VOIP_LOW_COST
++    afe_config->aec_mode = AEC_MODE_VOIP_LOW_COST;
++#elif CONFIG_STACKCHAN_AEC_MODE_SR_HIGH_PERF
++    afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
++#else
+     afe_config->aec_mode = AEC_MODE_VOIP_HIGH_PERF;
++#endif
+     afe_config->vad_mode = VAD_MODE_0;
+     afe_config->vad_min_noise_ms = 100;
+     if (vad_model_name != nullptr) {
+@@ -50,10 +56,24 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
+         afe_config->ns_model_name = ns_model_name;
+         afe_config->afe_ns_mode = AFE_NS_MODE_NET;
+     } else {
++#if CONFIG_STACKCHAN_AEC_NS
++        // No NSNet model in the assets: WebRTC noise suppression needs none.
++        afe_config->ns_init = true;
++        afe_config->afe_ns_mode = AFE_NS_MODE_WEBRTC;
++#else
+         afe_config->ns_init = false;
++#endif
+     }
+ 
++#if CONFIG_STACKCHAN_AEC_AGC
++    // Quiet children's voices: lift them towards the target level.
++    afe_config->agc_init = true;
++    afe_config->agc_mode = AFE_AGC_MODE_WEBRTC;
++    afe_config->agc_compression_gain_db = CONFIG_STACKCHAN_AEC_AGC_GAIN_DB;
++    afe_config->agc_target_level_dbfs = CONFIG_STACKCHAN_AEC_AGC_TARGET_DBFS;
++#else
+     afe_config->agc_init = false;
++#endif
+     afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+ 
+ #ifdef CONFIG_USE_DEVICE_AEC
 diff --git a/main/boards/common/i2c_device.cc b/main/boards/common/i2c_device.cc
 index 835997d..ea50d51 100644
 --- a/main/boards/common/i2c_device.cc
@@ -416,3 +475,18 @@ index 1e5d687..dbcc91d 100644
      bool has_serial_number_ = false;
      bool has_activation_challenge_ = false;
      std::string current_version_;
+diff --git a/main/protocols/websocket_protocol.cc b/main/protocols/websocket_protocol.cc
+index f0cc034..ce44a6b 100644
+--- a/main/protocols/websocket_protocol.cc
++++ b/main/protocols/websocket_protocol.cc
+@@ -208,6 +208,10 @@ std::string WebsocketProtocol::GetHelloMessage() {
+     cJSON* features = cJSON_CreateObject();
+ #if CONFIG_USE_SERVER_AEC
+     cJSON_AddBoolToObject(features, "aec", true);
++#endif
++#if CONFIG_USE_DEVICE_AEC
++    // Playkind gateway: this robot cancels its own echo and listens while it speaks.
++    cJSON_AddBoolToObject(features, "device_aec", true);
+ #endif
+     cJSON_AddBoolToObject(features, "mcp", true);
+     cJSON_AddItemToObject(root, "features", features);

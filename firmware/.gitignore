@@ -36,6 +36,8 @@
 
 # Build files
 build/
+build-duplex/
+dist/
 cmake-build-*/
 /components/
 managed_components/

@@ -3,8 +3,13 @@
 
 #include "audio_codec.h"
 
+#include <sdkconfig.h>
 #include <esp_codec_dev.h>
 #include <esp_codec_dev_defaults.h>
+
+#include <atomic>
+#include <cstdint>
+#include <vector>
 
 class CoreS3AudioCodec : public AudioCodec {
 private:
@@ -19,6 +24,23 @@ private:
     esp_codec_dev_handle_t input_dev_ = nullptr;
 
     void CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din);
+
+    // Full-duplex test build: every volume is capped (speaker next to the mics).
+    static int CapVolume(int volume);
+
+#if CONFIG_STACKCHAN_AEC_REF_4SLOT
+    // 16-bit speaker samples widened for the 32-bit slots of the 4-slot layout.
+    std::vector<int32_t> out32_;
+#endif
+#if CONFIG_STACKCHAN_AEC_LEVEL_LOG
+    // Once a second: how loud the microphone and the echo reference were.
+    int64_t level_sum_[2] = {0, 0};
+    int level_peak_[2] = {0, 0};
+    int level_frames_ = 0;
+    int64_t level_last_us_ = 0;
+    std::atomic<int> level_played_{0};  // speaker samples written since the last line
+    void LogLevels(const int16_t* data, int samples);
+#endif
 
     virtual int Read(int16_t* dest, int samples) override;
     virtual int Write(const int16_t* data, int samples) override;

@@ -1,0 +1,30 @@
+# Full-duplex test build for ONE StackChan (Playkind gateway). Applied on top of
+# sdkconfig.defaults by ./build_duplex.sh (STACKCHAN_VARIANT=duplex); the normal
+# build ignores this file.
+#
+# Echo cancellation on the robot: the firmware then listens in "realtime" mode,
+# keeps the microphone on while Robo speaks, and says so in its hello
+# (features.device_aec), so the gateway can give it its own model.
+CONFIG_USE_AUDIO_PROCESSOR=y
+CONFIG_USE_DEVICE_AEC=y
+CONFIG_USE_SERVER_AEC=n
+
+# Where the echo reference comes from: the shipped 2-slot frame (second channel
+# = MIC3, the speaker loop). Switch to the 4-slot fallback only if the level
+# log shows otherwise (see firmware/DUPLEX.md).
+CONFIG_STACKCHAN_AEC_REF_2SLOT=y
+# CONFIG_STACKCHAN_AEC_REF_4SLOT=y
+# CONFIG_STACKCHAN_AEC_REF_TDM_SLOT=1
+CONFIG_STACKCHAN_AEC_REF_GAIN_DB=30
+
+# The 1 W speaker sits next to the microphones: cap the volume.
+CONFIG_STACKCHAN_AEC_MAX_VOLUME=70
+
+# Canceller, noise suppression, gain control: start with the xiaozhi defaults,
+# then try one change at a time (firmware/DUPLEX.md, "Tuning").
+CONFIG_STACKCHAN_AEC_MODE_VOIP_HIGH_PERF=y
+CONFIG_STACKCHAN_AEC_NS=n
+CONFIG_STACKCHAN_AEC_AGC=n
+
+# Mic and reference levels on the serial monitor, once a second, for the test phase.
+CONFIG_STACKCHAN_AEC_LEVEL_LOG=y
