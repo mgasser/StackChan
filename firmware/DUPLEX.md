@@ -40,9 +40,10 @@ there. This is a reading of the sources, not a measurement: check it with the le
 tuning anything.
 
 If the log shows that the reference follows a person's voice instead of the speaker, switch
-to the fallback: `CONFIG_STACKCHAN_AEC_REF_4SLOT=y` reads all four TDM slots and keeps slot 0
-and `CONFIG_STACKCHAN_AEC_REF_TDM_SLOT` (try 1, 2, 3). The speaker then runs 32-bit slots, so
-both I2S directions share one 64 fs bit clock, and the AW88298 amplifier is set to 32-bit input.
+to the fallback: `./build_duplex.sh --ref-slot N` (or `CONFIG_STACKCHAN_AEC_REF_4SLOT=y`) reads
+all four TDM slots and keeps slot 0 and slot N (try 2, then 1, then 3). The speaker then runs
+32-bit slots, so both I2S directions share one 64 fs bit clock, and the AW88298 amplifier is
+set to 32-bit input. CI builds the slot-2 variant too (`stackchan-duplex-4slot-firmware`).
 
 ## Build
 
@@ -56,7 +57,7 @@ STACKCHAN_OTA_URL=https://gateway.playkind.studio/xiaozhi/<secret>/ota/ ./build_
 `STACKCHAN_OTA_URL` is optional: the robot's own NVS entry (`wifi/ota_url`, written by
 `stackchan-set-ota`) wins over it; the baked-in URL only helps after a factory reset.
 Without ESP-IDF: take the `stackchan-duplex-firmware` artifact of the latest *StackChan
-firmware* run in GitHub Actions.
+firmware* run in GitHub Actions (`stackchan-duplex-4slot-firmware` is the fallback layout).
 
 ## Install on the test robot
 

@@ -5,6 +5,8 @@
 #   ./build_duplex.sh                # build → dist/duplex-<version>/
 #   ./build_duplex.sh --flash PORT   # build, then flash over USB (keeps Wi-Fi and NVS)
 #   ./build_duplex.sh --fresh        # rebuild the sdkconfig from the defaults files
+#   ./build_duplex.sh --ref-slot N   # 4-slot fallback: echo reference in TDM slot N (1-3),
+#                                    # only if the level log shows the 2-slot layout is wrong
 #
 # Environment (optional):
 #   STACKCHAN_OTA_URL     baked in as CONFIG_OTA_URL, the fallback when the robot's NVS
@@ -19,11 +21,16 @@ cd "$(dirname "$0")"
 
 port=""
 fresh=0
+ref_slot=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --flash) port="${2:?--flash needs the serial port, e.g. /dev/cu.usbmodem1101}"; shift 2 ;;
     --fresh) fresh=1; shift ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    --ref-slot)
+      ref_slot="${2:?--ref-slot needs the TDM slot, 1, 2 or 3}"
+      case "$ref_slot" in 1|2|3) ;; *) echo "--ref-slot must be 1, 2 or 3" >&2; exit 2 ;; esac
+      shift 2 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -51,11 +58,23 @@ export STACKCHAN_FW_VERSION="${STACKCHAN_FW_VERSION:-${base}.$(date -u +%y%m%d).
 export STACKCHAN_VARIANT=duplex
 
 build="build-duplex"
+label="duplex"
+if [ -n "$ref_slot" ]; then
+  build="build-duplex-ref${ref_slot}"
+  label="duplex-4slot-ref${ref_slot}"
+fi
 mkdir -p "$build"
 extra="$PWD/$build/sdkconfig.defaults.generated"
 : > "$extra"
 if [ -n "${STACKCHAN_OTA_URL:-}" ]; then
   echo "CONFIG_OTA_URL=\"${STACKCHAN_OTA_URL}\"" >> "$extra"
+fi
+if [ -n "$ref_slot" ]; then
+  {
+    echo "CONFIG_STACKCHAN_AEC_REF_4SLOT=y"
+    echo "# CONFIG_STACKCHAN_AEC_REF_2SLOT is not set"
+    echo "CONFIG_STACKCHAN_AEC_REF_TDM_SLOT=${ref_slot}"
+  } >> "$extra"
 fi
 export STACKCHAN_EXTRA_DEFAULTS="$extra"
 
@@ -74,11 +93,13 @@ echo "==> Building the full-duplex firmware ${STACKCHAN_FW_VERSION}"
 idf.py -B "$build" -D SDKCONFIG="$PWD/$build/sdkconfig" reconfigure build
 echo "$want" > "$stamp"
 
-for opt in CONFIG_USE_DEVICE_AEC CONFIG_STACKCHAN_AEC_MAX_VOLUME; do
+opts="CONFIG_USE_DEVICE_AEC CONFIG_STACKCHAN_AEC_MAX_VOLUME"
+[ -n "$ref_slot" ] && opts="$opts CONFIG_STACKCHAN_AEC_REF_4SLOT"
+for opt in $opts; do
   grep -q "^${opt}=" "$build/sdkconfig" || { echo "the build lost ${opt}; check sdkconfig.defaults.duplex" >&2; exit 1; }
 done
 
-dist="dist/duplex-${STACKCHAN_FW_VERSION}"
+dist="dist/${label}-${STACKCHAN_FW_VERSION}"
 rm -rf "$dist"
 mkdir -p "$dist"
 cp "$build/flash_args" "$dist/"

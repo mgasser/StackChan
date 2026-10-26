@@ -37,6 +37,7 @@
 # Build files
 build/
 build-duplex/
+build-duplex-ref*/
 dist/
 cmake-build-*/
 /components/

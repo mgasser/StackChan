@@ -1,7 +1,8 @@
-# Builds the StackChan firmware with ESP-IDF v5.5.4: the stock build (idf.py build)
-# and the full-duplex test build (firmware/build_duplex.sh, see firmware/DUPLEX.md).
-# The duplex image is kept as an artifact: flash it over USB, or upload
-# stack-chan.bin to the Playkind gateway for one robot.
+# Builds the StackChan firmware with ESP-IDF v5.5.4: the stock build (idf.py build),
+# the full-duplex test build (firmware/build_duplex.sh, see firmware/DUPLEX.md) and
+# its 4-slot fallback (reference in TDM slot 2). The duplex images are kept as
+# artifacts: flash one over USB, or upload its stack-chan.bin to the Playkind
+# gateway for one robot.
 name: StackChan firmware
 
 on:
@@ -24,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [stock, duplex]
+        variant: [stock, duplex, duplex-4slot]
     steps:
       - uses: actions/checkout@v4
 
@@ -55,11 +56,19 @@ jobs:
           . "$IDF_PATH/export.sh"
           ./build_duplex.sh
 
+      - name: Build (full duplex, 4-slot fallback)
+        if: matrix.variant == 'duplex-4slot'
+        working-directory: firmware
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          ./build_duplex.sh --ref-slot 2
+
       - name: Keep the full-duplex image
-        if: matrix.variant == 'duplex'
+        if: matrix.variant != 'stock'
         uses: actions/upload-artifact@v4
         with:
-          name: stackchan-duplex-firmware
+          name: stackchan-${{ matrix.variant }}-firmware
           path: firmware/dist/
           if-no-files-found: error
           retention-days: 30
