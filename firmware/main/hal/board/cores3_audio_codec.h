@@ -39,6 +39,10 @@ private:
     int level_frames_ = 0;
     int64_t level_last_us_ = 0;
     std::atomic<int> level_played_{0};  // speaker samples written since the last line
+    // The last line's numbers, read by GetLevels() from the MCP task (32-bit atomics only).
+    std::atomic<int> levels_mic_rms_{0}, levels_mic_peak_{0}, levels_ref_rms_{0}, levels_ref_peak_{0};
+    std::atomic<int> levels_played_ms_{0};
+    std::atomic<uint32_t> levels_at_ms_{0};
     void LogLevels(const int16_t* data, int samples);
 #endif
 
@@ -54,6 +58,16 @@ public:
     virtual void SetOutputVolume(int volume) override;
     virtual void EnableInput(bool enable) override;
     virtual void EnableOutput(bool enable) override;
+
+#if CONFIG_STACKCHAN_AEC_LEVEL_LOG
+    struct Levels {
+        int mic_rms, mic_peak, ref_rms, ref_peak;  // the last second, in 16-bit sample units
+        int played_ms;                              // speaker audio played in that second
+        uint32_t at_ms;                             // esp_timer time of the line in ms, 0 = none yet
+    };
+    // What the level log last printed; the gateway reads it over MCP (self.audio.get_levels).
+    Levels GetLevels() const;
+#endif
 };
 
 #endif // _BOX_AUDIO_CODEC_H

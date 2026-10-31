@@ -84,6 +84,8 @@ firmware* run in GitHub Actions (`stackchan-duplex-4slot-firmware` is the fallba
    `AEC levels: …` once a second. In the Studio (Admin → Creatures → Device →
    *Listening & firmware*) the robot shows "full duplex" after its first conversation, and the
    gateway transcript (Diagnostics) starts with `session started · <model> · full duplex`.
+   The LED bar in the base tells the state from across the room: green while the robot
+   listens, blue while it speaks, off when idle (the stock firmware does this too).
 
 Later images go over the air: Device → *Listening & firmware* → upload `stack-chan.bin`. The
 robot installs it on its next start (or Settings → update). If it does not boot, the bootloader
@@ -96,6 +98,13 @@ The level log (`CONFIG_STACKCHAN_AEC_LEVEL_LOG=y`, on in the variant) prints onc
 ```
 AEC levels: mic rms 812 peak 6120 | ref rms 2310 peak 15880 | speaker played 1000 ms
 ```
+
+**Without a cable:** the same numbers are an MCP tool, `self.audio.get_levels`, which the
+Playkind gateway reads on request: Studio → Device → *Listening & firmware* → *Echo levels* →
+*Read*, or `GET /stackchan/<mac>/levels` with the admin token
+(`{"status":"ok","mic_rms":812,"mic_peak":6120,"ref_rms":2310,"ref_peak":15880,"speaker_ms":1000,"age_ms":400}`).
+The gateway never offers this tool to the conversation model. Steps 1 and 2 below can be done
+from the Studio alone; the serial monitor is still the place for CPU and crash messages.
 
 1. **Reference check.** Robo talks (Studio → Quick tests → *Say hello*), nobody in the room:
    `ref` must be clearly above zero while `speaker played` is high. Then a person talks, Robo

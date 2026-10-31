@@ -319,13 +319,24 @@ void CoreS3AudioCodec::LogLevels(const int16_t* data, int samples) {
         return;
     }
     const int played_ms = level_played_.exchange(0) * 1000 / output_sample_rate_;
+    const int mic_rms = static_cast<int>(std::sqrt(static_cast<double>(level_sum_[0]) / level_frames_));
+    const int ref_rms = static_cast<int>(std::sqrt(static_cast<double>(level_sum_[1]) / level_frames_));
     ESP_LOGI(TAG, "AEC levels: mic rms %d peak %d | ref rms %d peak %d | speaker played %d ms",
-        static_cast<int>(std::sqrt(static_cast<double>(level_sum_[0]) / level_frames_)), level_peak_[0],
-        static_cast<int>(std::sqrt(static_cast<double>(level_sum_[1]) / level_frames_)), level_peak_[1],
-        played_ms);
+        mic_rms, level_peak_[0], ref_rms, level_peak_[1], played_ms);
+    levels_mic_rms_ = mic_rms;
+    levels_mic_peak_ = level_peak_[0];
+    levels_ref_rms_ = ref_rms;
+    levels_ref_peak_ = level_peak_[1];
+    levels_played_ms_ = played_ms;
+    levels_at_ms_ = static_cast<uint32_t>(now / 1000);
     level_sum_[0] = level_sum_[1] = 0;
     level_peak_[0] = level_peak_[1] = 0;
     level_frames_ = 0;
     level_last_us_ = now;
+}
+
+CoreS3AudioCodec::Levels CoreS3AudioCodec::GetLevels() const {
+    return Levels{levels_mic_rms_.load(), levels_mic_peak_.load(), levels_ref_rms_.load(),
+                  levels_ref_peak_.load(), levels_played_ms_.load(), levels_at_ms_.load()};
 }
 #endif

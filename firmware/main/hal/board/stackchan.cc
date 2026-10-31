@@ -8,6 +8,7 @@
 #include "i2c_device.h"
 #include "axp2101.h"
 #include "settings.h"
+#include "mcp_server.h"
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -17,6 +18,7 @@
 #include <esp_lcd_ili9341.h>
 #include <esp_timer.h>
 #include <algorithm>
+#include <cstdio>
 #include <mutex>
 #include "stackchan_camera.h"
 #include "hal_bridge.h"
@@ -675,6 +677,31 @@ private:
     }
 
 public:
+#if CONFIG_STACKCHAN_AEC_LEVEL_LOG
+    // Playkind gateway: the microphone and echo-reference levels over MCP, so the
+    // full-duplex measurement (DUPLEX.md) needs no serial cable. The gateway offers
+    // the conversation only its own tools, so the model never sees this one.
+    void InitializeLevelsTool()
+    {
+        McpServer::GetInstance().AddTool(
+            "self.audio.get_levels",
+            "Diagnostics: microphone and echo-reference levels of the last second (rms and peak, 16-bit "
+            "sample units), the speaker audio played in it (ms) and the age of the reading (ms).",
+            PropertyList(), [this](const PropertyList&) -> ReturnValue {
+                auto levels            = static_cast<CoreS3AudioCodec*>(GetAudioCodec())->GetLevels();
+                const uint32_t now_ms  = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                const long age_ms      = levels.at_ms ? static_cast<long>(now_ms - levels.at_ms) : -1;
+                char json[192];
+                snprintf(json, sizeof(json),
+                         "{\"mic_rms\":%d,\"mic_peak\":%d,\"ref_rms\":%d,\"ref_peak\":%d,"
+                         "\"speaker_ms\":%d,\"age_ms\":%ld}",
+                         levels.mic_rms, levels.mic_peak, levels.ref_rms, levels.ref_peak, levels.played_ms,
+                         age_ms);
+                return std::string(json);
+            });
+    }
+#endif
+
     M5StackCoreS3Board()
     {
         InitializeI2c();
@@ -688,6 +715,9 @@ public:
         InitializeCamera();
         StartTouchpadTimer();
         GetBacklight()->RestoreBrightness();
+#if CONFIG_STACKCHAN_AEC_LEVEL_LOG
+        InitializeLevelsTool();
+#endif
     }
 
     // All fallback paths (no saved SSID, timeout, explicit reconfiguration) use

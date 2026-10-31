@@ -882,6 +882,9 @@ config STACKCHAN_AEC_LEVEL_LOG
         Prints "AEC levels: mic rms/peak, ref rms/peak" on the serial monitor (idf.py monitor).
         While Robo speaks the reference must be loud; while only a person talks it must stay
         near zero. If it is the other way round, the reference is a microphone, not the loop.
+        The same numbers are offered as the MCP tool self.audio.get_levels, which the Playkind
+        gateway shows in the Studio (Device -> Listening & firmware -> Echo levels): the
+        measurement then needs no cable.
 
 endmenu
 
